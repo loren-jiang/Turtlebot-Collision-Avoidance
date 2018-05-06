@@ -1,38 +1,54 @@
 #!/usr/bin/env python
 
-#imports go here
-import rospy
-from geometry_msgs.msg import Twist
+#math tools
 from utils import *
-import tf
-import tf.transformations as tfs
 import numpy as np 
 import scipy 
 import math
-from geometry_msgs.msg import Twist
+
+#ROS stuff
+import rospy
+import tf
+import tf.transformations as tfs
+from std_msgs.msg import Empty
+from time import time
+from geometry_msgs.msg import Twist, Pose, Point, Quaternion
 from sensor_msgs.msg import LaserScan 
 from lidarClass import Lidar
 from laser_geometry import LaserProjection
 import sensor_msgs.point_cloud2 as pc2 #may want to use point cloud...not sure yet
+import actionlib
+from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
+from actionlib_msgs.msg import *
+
+#plotting tools
 import matplotlib.pyplot as plt
-from std_msgs.msg import Empty
-from time import time
+import matplotlib.animation as animation
+from matplotlib import style
 
-# global variables go here
-
-
-
-ROS_RATE = 10 # frequency Hz?
-cmd_vel = rospy.Publisher('cmd_vel_mux/input/navi', Twist, queue_size=10) #autonomous
-# set up the odometry reset publisher
-reset_odom = rospy.Publisher('/mobile_base/commands/reset_odometry', Empty, queue_size=10)
-
+# global var
 valley_mag_thresh = 0 #NEED TO SET THESE
 valley_ind_thresh = 0
 
+robot_state = np.zeros(3) #global turtlebot state
 goal_state = np.zeros(3) #global goal state
 target_speed = np.array(.2) # m/s?
+ROS_RATE = 10 # frequency Hz?
 
+#initializations
+rospy.init_node('scan_to_cmd', anonymous=False)
+rospy.loginfo("To stop TurtleBot CTRL + C")
+# setting up the transform listener to find turtlebot position
+from_frame = 'odom'
+to_frame = 'base_link'
+listener = tf.TransformListener()
+listener.waitForTransform(from_frame, to_frame, rospy.Time(), rospy.Duration(5.0))
+broadcaster = tf.TransformBroadcaster()
+# this is so that each loop of the while loop takes the same amount of time.  The controller works better
+# if you have this here
+rate = rospy.Rate(ROS_RATE) 
+
+cmd_vel = rospy.Publisher('cmd_vel_mux/input/navi', Twist, queue_size=10) #autonomous
 
 def nan_helper(y):
     """Helper to handle indices and logical indices of NaNs.
@@ -50,16 +66,25 @@ def nan_helper(y):
     """
     return np.isnan(y), lambda z: z.nonzero()[0]
 
-#"VFH" algorithm
+def euclidean_dist(pos1, pos2):
+    """Euclidean distance between current pose and the goal."""
+    return np.linalg.norm(pos1 - pos2)
+
+# finds the possible valleys to take based on threshold values and closest to goal
+def find_valleys(depths):
+    return 0
+#modified"VFH" algorithm
 #data --> np array of 1/depth^2 and angle as tuple
 #state --> robot state
-def compute_cmd(state, data):
+def compute_goal(state, data):
     #valley_inds = scipy.signal.find_peaks_cwt(-data[:][0]) #need to include neg sign to be able to find "peaks"
     #print(-data[:,0])
+
+    valley_inds - find_valleys(-data[:,0]) #need to include neg sign to be able to find "peaks"
+
     valley_inds = np.array([1, 40, 50]) #testing purposes
     #print(valley_inds)
     headings =  data[valley_inds][:,1] #possible headings to choose from
-    print(headings)
     final_goal = np.zeros(3) 
     goal_dist = np.array([0.05, 0]) #goal dist in robot frame [meters]
     for heading in headings:
@@ -67,17 +92,49 @@ def compute_cmd(state, data):
         goal_from_world = np.dot(rot2d, goal_dist)
         # need to double check if this is the correct transformation
         next_goal = np.array([goal_from_world[0] + state[0], goal_from_world[1] + state[1], state[2]])
-
-        if (np.linalg.norm(goal_state[:2] - next_goal[:2]) < np.linalg.norm(goal_state[:2] - final_goal[:2])):
+        if (euclidean_dist(goal_state[:2], next_goal[:2]) < euclidean_dist(goal_state[:2], final_goal[:2])):
             final_goal = next_goal
 
-    ret_twist = Twist()
+    # goal = MoveBaseGoal()
+    # goal.target_pose.header.frame_id = 'base_link'
+    # goal.target_pose.header.stamp = rospy.Time.now()
+    # goal_pt = Point(final_goal[0], final_goal[1], 0)
+    # np_quat = tf.transformations.quaternion_from_euler(0, 0, final_goal[2])
+    # goal_quat = Quaternion(np_quat[0], np_quat[1], np_quat[2], np_quat[3])
+    # goal.target_pose.pose = Pose(goal_pt, goal_quat)
+    # print(goal)
+    return final_goal #desired goal pose!
 
-    # Need to figure out some control law to find appropriate twist
-    ret_twist.linear.x = .1
-    ret_twist.angular.z = final_goal[2]
-    print(ret_twist)
-    return ret_twist
+#compute desired twist using a simple P controller...for now
+def compute_twist_and_move(final_state):
+    global cmd_vel, robot_state
+    twist = Twist()
+
+    #gains which NEED TO BE TUNED
+    kp_lin_vel = .75
+    kp_ang_vel = 2.5
+    distance_tolerance = 0.025
+    final_state = np.array(([.5,.5,0]))
+    while (euclidean_dist(robot_state[:2], final_state[:2]) >= distance_tolerance):
+        robot_state = get_robot_state()
+        print("ROBOT STATE:" + str(robot_state))
+        print("FINAL STATE:" + str(final_state))
+        steer_ang = math.atan2(final_state[1] - robot_state[1], final_state[0] - robot_state[0])
+        error = final_state - robot_state
+        twist.linear.x = kp_lin_vel * (error[0])
+        twist.angular.z = kp_ang_vel * (steer_ang - robot_state[2])
+        cmd_vel.publish(twist)
+        rate.sleep()
+    
+def get_robot_state():
+    # getting the position of the turtlebot
+    global robot_state
+    robot_pos, robot_rot = listener.lookupTransform(from_frame, to_frame, listener.getLatestCommonTime(from_frame, to_frame))
+    #broadcaster.sendTransform(robot_pos, robot_rot, listener.getLatestCommonTime(from_frame, to_frame), to_frame, from_frame) #this seems to mess things up...not sure why
+    robot_rot = tf.transformations.euler_from_quaternion(robot_rot) #should be from -pi to pi as euler
+    # 3x1 array, representing (x,y,theta) of robot starting state
+    robot_state = np.array([robot_pos[0], robot_pos[1], robot_rot[2]])
+    return robot_state
 
 def moving_average(a, n=3) :
     ret = np.cumsum(a, dtype=float)
@@ -86,29 +143,26 @@ def moving_average(a, n=3) :
 
 
 def main():
-    global cmd_vel, ROS_RATE, goal_state
-    rospy.init_node('scan_to_cmd', anonymous=False)
-    rospy.loginfo("To stop TurtleBot CTRL + C")
+    global cmd_vel, ROS_RATE, goal_state, robot_state, from_frame, to_frame
+    
+    #shutdown
     rospy.on_shutdown(shutdown)
+
+    # set up the odometry reset publisher
+    reset_odom = rospy.Publisher('/mobile_base/commands/reset_odometry', Empty, queue_size=10)
 
     # reset odometry (these messages take a few iterations to get through)
     timer = time()
-    while time() - timer < 0.25:
+    while time() - timer < 0.4:
         reset_odom.publish(Empty())
+
+    # move_base = actionlib.SimpleActionClient('move_base', MoveBaseAction)
+    # rospy.loginfo("Wait for the action server to come up")
+    # # Allow up to 5 seconds for the action server to come up
+    # move_base.wait_for_server(rospy.Duration(5))
 
     #new lidar object
     lidar = Lidar()
-
-    # setting up the transform listener to find turtlebot position
-    listener = tf.TransformListener()
-    from_frame = 'odom'
-    to_frame = 'base_link'
-    listener.waitForTransform(from_frame, to_frame, rospy.Time(), rospy.Duration(5.0))
-    broadcaster = tf.TransformBroadcaster()
-
-    # this is so that each loop of the while loop takes the same amount of time.  The controller works better
-    # if you have this here
-    rate = rospy.Rate(ROS_RATE) 
 
     #direction from pixel to turtlebot pos vector
     beta = 0
@@ -126,19 +180,15 @@ def main():
     fig=plt.figure()
 
     while not rospy.is_shutdown():
-        # getting the position of the turtlebot
-        robot_pos, robot_rot = listener.lookupTransform(from_frame, to_frame, listener.getLatestCommonTime(from_frame, to_frame))
+        # 3x1 array, representing (x,y,theta) of robot starting state
+        robot_state = get_robot_state()
 
         #define goal state as in front of the current state
         goal_dist = np.array([1.5, 0])
-        robot_rot = tf.transformations.euler_from_quaternion(robot_rot) #should be from -pi to pi as euler
-        # 3x1 array, representing (x,y,theta) of robot starting state
-        robot_state = np.array([robot_pos[0], robot_pos[1], robot_rot[2]])
-
-        rot2d = rotation2d(robot_rot[2]) #just care about yaw
+        rot2d = rotation2d(robot_state[2]) 
         goal_from_world = np.dot(rot2d, goal_dist)
         # need to double check if this is the correct transformation
-        goal_state = np.array([goal_from_world[0] + robot_state[0], goal_from_world[1] + robot_state[1], robot_rot[2]])
+        goal_state = np.array([goal_from_world[0] + robot_state[0], goal_from_world[1] + robot_state[1], robot_state[2]])
         #IF WE WANT POINT CLOUD2
         # if lidar.xyz_generator is not None:
         #   for point in lidar.xyz_generator:
@@ -167,16 +217,17 @@ def main():
             tmp = 1./(combined[:,0] *combined[:,0] )
             combined[:,0] = tmp
 
-            move_cmd = compute_cmd(robot_state, combined) #computes twist message to cmd_vel
-            # twist_message = Twist()
-            # twist_message.linear.x = 0.2
-            # twist_message.angular.z = 0
-            cmd_vel.publish(move_cmd)
+            goal_state = compute_goal(robot_state, combined) #find the goal (best "valley" to go to)
+            #move_base.send_goal(move_goal)
+
+            compute_twist_and_move(goal_state)
+            
             plt.plot(angles, 1./(lidar_copy*lidar_copy))
             plt.draw()
             plt.pause(0.0001) 
+            plt.clf()
         #rospy.sleep(0.05)
-        plt.clf()
+        
         rate.sleep()    
 
 def shutdown():
