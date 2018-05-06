@@ -1,0 +1,11 @@
+scan_filter_chain:
+- name: unique_name1
+  type: LaserFilterClass1
+  params:
+    param1: a
+    param2: b
+- name: unique_name2
+  type: LaserFilterClass2
+  params:
+    param1: a
+    param2: b

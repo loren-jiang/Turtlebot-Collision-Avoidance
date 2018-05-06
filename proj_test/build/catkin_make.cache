@@ -1,0 +1,2 @@
+laser_filters-indigo-devel
+-DCATKIN_DEVEL_PREFIX=/home/cc/ee106b/sp18/class/ee106b-aac/ros_workspaces/proj_test/devel -DCMAKE_INSTALL_PREFIX=/home/cc/ee106b/sp18/class/ee106b-aac/ros_workspaces/proj_test/install -G Unix Makefiles
