@@ -28,7 +28,7 @@ import matplotlib.animation as animation
 from matplotlib import style
 
 # global var
-valley_mag_thresh = 0.2 #NEED TO SET THESE
+valley_mag_thresh = 0.4 #NEED TO SET THESE
 valley_ind_thresh = 20.0 * 0.00171110546216 #num pixels * angle increment
 
 robot_state = np.zeros(3) #global turtlebot state
@@ -52,6 +52,8 @@ broadcaster = tf.TransformBroadcaster()
 rate = rospy.Rate(ROS_RATE) 
 
 cmd_vel = rospy.Publisher('cmd_vel_mux/input/navi', Twist, queue_size=10) #autonomous
+prev_twist = Twist()
+prev_goal_state = np.zeros(3)
 
 def nan_helper(y):
     """Helper to handle indices and logical indices of NaNs.
@@ -79,6 +81,7 @@ def find_valleys(data):
     cropped_data = data[data[:,0] < valley_mag_thresh]
     k = 0
     valley_angles = []
+    valley_widths = []
     cum_sum = 0
     ct = 0
     while (k < len(cropped_data) - 1):
@@ -87,11 +90,11 @@ def find_valleys(data):
         if abs(cropped_data[k][1] - cropped_data[k+1][1]) > valley_ind_thresh or k == len(cropped_data) - 2: # if there is a big jump in the angles > valley_ind_thresh
             cum_avg = cum_sum / ct
             valley_angles.append(cum_avg)
+            valley_widths.append(ct)
             cum_sum = 0
             ct = 0
         k += 1
-    print(valley_angles)
-    return valley_angles
+    return valley_angles, valley_widths
 
 #modified"VFH" algorithm
 #data --> np array of 1/depth^2 and angle as tuple
@@ -100,20 +103,39 @@ def compute_goal(state, data):
     #valley_inds = scipy.signal.find_peaks_cwt(-data[:][0]) #need to include neg sign to be able to find "peaks"
     #print(-data[:,0])
 
-    valley_inds = find_valleys(data) #need to include neg sign to be able to find "peaks"
-
+    valley_angles, valley_widths = find_valleys(data) #need to include neg sign to be able to find "peaks"
+    print(valley_angles)
+    print(valley_widths)
     #valley_inds = np.array([1, 40, 50]) #testing purposes
     #print(valley_inds)
-    headings =  data[valley_inds][:,1] #possible headings to choose from
     final_goal = np.zeros(3) 
-    goal_dist = np.array([0.05, 0]) #goal dist in robot frame [meters]
-    for heading in headings:
-        rot2d = rotation2d(heading) #just care about yaw
-        goal_from_world = np.dot(rot2d, goal_dist)
-        # need to double check if this is the correct transformation
-        next_goal = np.array([goal_from_world[0] + state[0], goal_from_world[1] + state[1], state[2]])
-        if (euclidean_dist(goal_state[:2], next_goal[:2]) < euclidean_dist(goal_state[:2], final_goal[:2])):
-            final_goal = next_goal
+    goal_dist = np.array([0.1, 0]) #goal dist in robot frame [meters]
+
+
+    #PICKING WIDEST VALLEY
+    k = 0
+    max_width_ind = 0
+    max_width = 0
+    while(k<len(valley_widths)):
+        if max_width < valley_widths[k]:
+            max_width = valley_widths
+            max_width_ind = k
+        k +=1
+    heading = valley_angles[max_width_ind]
+    print(heading)
+    rot2d = rotation2d(heading) #just care about yaw
+    goal_from_world = np.dot(rot2d, goal_dist)
+    # need to double check if this is the correct transformation
+    final_goal = np.array([goal_from_world[0] + state[0], goal_from_world[1] + state[1], state[2]])
+
+    # PICKIGN VALLEY NEAREST TO AHEAD GOAL...NEED TO FIX IF STATEMENT FOR NEXT GOAL!!!
+    # for heading in valley_angles:
+    #     rot2d = rotation2d(heading) #just care about yaw
+    #     goal_from_world = np.dot(rot2d, goal_dist)
+    #     # need to double check if this is the correct transformation
+    #     next_goal = np.array([goal_from_world[0] + state[0], goal_from_world[1] + state[1], state[2]])
+    #     if (euclidean_dist(goal_state[:2], next_goal[:2]) < euclidean_dist(goal_state[:2], final_goal[:2])):
+    #         final_goal = next_goal
 
     # goal = MoveBaseGoal()
     # goal.target_pose.header.frame_id = 'base_link'
@@ -131,19 +153,22 @@ def compute_twist_and_move(final_state):
     twist = Twist()
 
     #gains which NEED TO BE TUNED
-    kp_lin_vel = 1.25
-    kp_ang_vel = 4
-    distance_tolerance = 0.025
-    final_state = np.array(([.3,.3,0]))
+    kp_lin_vel = 1.5
+    kp_ang_vel = 5
+    distance_tolerance = 0.03 #[meters]
+    #final_state = np.array(([.3,.3,0]))
     while (euclidean_dist(robot_state[:2], final_state[:2]) >= distance_tolerance):
         robot_state = get_robot_state()
-        print("ROBOT STATE:" + str(robot_state))
-        print("FINAL STATE:" + str(final_state))
+        #print("ROBOT STATE:" + str(robot_state))
+        #print("FINAL STATE:" + str(final_state))
         steer_ang = math.atan2(final_state[1] - robot_state[1], final_state[0] - robot_state[0])
         error = final_state - robot_state
         twist.linear.x = kp_lin_vel * (error[0])
         twist.angular.z = kp_ang_vel * (steer_ang - robot_state[2])
+        #if abs(prev_twist.angular.z - twist.angular.z) > 
         cmd_vel.publish(twist)
+        #print(twist)
+        prev_twist = twist
         rate.sleep()
     
 def get_robot_state():
@@ -163,7 +188,7 @@ def moving_average(a, n=3) :
 
 
 def main():
-    global cmd_vel, ROS_RATE, goal_state, robot_state, from_frame, to_frame
+    global cmd_vel, ROS_RATE, goal_state, robot_state, from_frame, to_frame, prev_goal_state
     
     #shutdown
     rospy.on_shutdown(shutdown)
@@ -222,7 +247,7 @@ def main():
         #       print(d)
 
         if not lidar.ranges or all(np.isnan(lidar.ranges)):
-            print("WALL SHITTTTT")
+            print("WALL or nans")
             continue
         else:
             #clean the scan data and compute angle
@@ -238,20 +263,28 @@ def main():
             combined = np.vstack((lidar_copy, angles)).T # shape  = (640, 2)
             tmp = sig.filtfilt(b_filt,a_filt,1./(combined[:,0] *combined[:,0] ))
             combined[:,0] = tmp
-            print(find_valleys(combined))
 
-            #goal_state = compute_goal(robot_state, combined) #find the goal (best "valley" to go to)
+            goal_state = compute_goal(robot_state, combined) #find the goal (best "valley" to go to)
             #move_base.send_goal(move_goal)
-            
+            #if euclidean_dist(prev_goal_state[:2],goal_state[:2]) > .25:
+            if abs(prev_goal_state[2]-goal_state[2]) > .6:
+                goal_state = prev_goal_state
+
             #compute_twist_and_move(goal_state)
             
+            print("-----------------------robot_state--------------------------------")
+            print(robot_state)
+            print("-----------------------goal_state--------------------------------")
+            print(goal_state)
+
+            prev_goal_state = goal_state
             plt.plot(angles, tmp)
             plt.draw()
             plt.pause(0.0001) 
             plt.clf()
-        #rospy.sleep(0.05)
+        rospy.sleep(0.05)
         
-        rate.sleep()    
+        #rate.sleep()    
 
 def shutdown():
     global cmd_vel
