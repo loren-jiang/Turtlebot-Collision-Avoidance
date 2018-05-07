@@ -3,7 +3,8 @@
 #math tools
 from utils import *
 import numpy as np 
-import scipy 
+np.set_printoptions(threshold='nan')
+import scipy.signal as sig
 import math
 
 #ROS stuff
@@ -27,13 +28,15 @@ import matplotlib.animation as animation
 from matplotlib import style
 
 # global var
-valley_mag_thresh = 0 #NEED TO SET THESE
-valley_ind_thresh = 0
+valley_mag_thresh = 0.2 #NEED TO SET THESE
+valley_ind_thresh = 20.0 * 0.00171110546216 #num pixels * angle increment
 
 robot_state = np.zeros(3) #global turtlebot state
 goal_state = np.zeros(3) #global goal state
 target_speed = np.array(.2) # m/s?
 ROS_RATE = 10 # frequency Hz?
+#butterworth for smoothing
+b_filt, a_filt = sig.butter(4, 0.03, analog=False)
 
 #initializations
 rospy.init_node('scan_to_cmd', anonymous=False)
@@ -71,8 +74,25 @@ def euclidean_dist(pos1, pos2):
     return np.linalg.norm(pos1 - pos2)
 
 # finds the possible valleys to take based on threshold values and closest to goal
-def find_valleys(depths):
-    return 0
+#returns the index of the valleys
+def find_valleys(data):
+    cropped_data = data[data[:,0] < valley_mag_thresh]
+    k = 0
+    valley_angles = []
+    cum_sum = 0
+    ct = 0
+    while (k < len(cropped_data) - 1):
+        cum_sum += cropped_data[k][1]
+        ct += 1
+        if abs(cropped_data[k][1] - cropped_data[k+1][1]) > valley_ind_thresh or k == len(cropped_data) - 2: # if there is a big jump in the angles > valley_ind_thresh
+            cum_avg = cum_sum / ct
+            valley_angles.append(cum_avg)
+            cum_sum = 0
+            ct = 0
+        k += 1
+    print(valley_angles)
+    return valley_angles
+
 #modified"VFH" algorithm
 #data --> np array of 1/depth^2 and angle as tuple
 #state --> robot state
@@ -80,9 +100,9 @@ def compute_goal(state, data):
     #valley_inds = scipy.signal.find_peaks_cwt(-data[:][0]) #need to include neg sign to be able to find "peaks"
     #print(-data[:,0])
 
-    valley_inds - find_valleys(-data[:,0]) #need to include neg sign to be able to find "peaks"
+    valley_inds = find_valleys(data) #need to include neg sign to be able to find "peaks"
 
-    valley_inds = np.array([1, 40, 50]) #testing purposes
+    #valley_inds = np.array([1, 40, 50]) #testing purposes
     #print(valley_inds)
     headings =  data[valley_inds][:,1] #possible headings to choose from
     final_goal = np.zeros(3) 
@@ -111,10 +131,10 @@ def compute_twist_and_move(final_state):
     twist = Twist()
 
     #gains which NEED TO BE TUNED
-    kp_lin_vel = .75
-    kp_ang_vel = 2.5
+    kp_lin_vel = 1.25
+    kp_ang_vel = 4
     distance_tolerance = 0.025
-    final_state = np.array(([.5,.5,0]))
+    final_state = np.array(([.3,.3,0]))
     while (euclidean_dist(robot_state[:2], final_state[:2]) >= distance_tolerance):
         robot_state = get_robot_state()
         print("ROBOT STATE:" + str(robot_state))
@@ -179,6 +199,7 @@ def main():
     plt.ion() ## Note this correction
     fig=plt.figure()
 
+    
     while not rospy.is_shutdown():
         # 3x1 array, representing (x,y,theta) of robot starting state
         robot_state = get_robot_state()
@@ -201,6 +222,7 @@ def main():
         #       print(d)
 
         if not lidar.ranges or all(np.isnan(lidar.ranges)):
+            print("WALL SHITTTTT")
             continue
         else:
             #clean the scan data and compute angle
@@ -214,15 +236,16 @@ def main():
             lidar_copy[nans] = np.interp(nonzero_filter(nans), nonzero_filter(~nans), lidar_copy[~nans])
 
             combined = np.vstack((lidar_copy, angles)).T # shape  = (640, 2)
-            tmp = 1./(combined[:,0] *combined[:,0] )
+            tmp = sig.filtfilt(b_filt,a_filt,1./(combined[:,0] *combined[:,0] ))
             combined[:,0] = tmp
+            print(find_valleys(combined))
 
-            goal_state = compute_goal(robot_state, combined) #find the goal (best "valley" to go to)
+            #goal_state = compute_goal(robot_state, combined) #find the goal (best "valley" to go to)
             #move_base.send_goal(move_goal)
-
-            compute_twist_and_move(goal_state)
             
-            plt.plot(angles, 1./(lidar_copy*lidar_copy))
+            #compute_twist_and_move(goal_state)
+            
+            plt.plot(angles, tmp)
             plt.draw()
             plt.pause(0.0001) 
             plt.clf()
