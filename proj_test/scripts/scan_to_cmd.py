@@ -224,7 +224,6 @@ def main():
     plt.ion() ## Note this correction
     fig=plt.figure()
 
-    
     while not rospy.is_shutdown():
         # 3x1 array, representing (x,y,theta) of robot starting state
         robot_state = get_robot_state()
@@ -279,6 +278,9 @@ def main():
 
             prev_goal_state = goal_state
             plt.plot(angles, tmp)
+            plt.title("Laserscan data, interpolated and smoothed")
+            plt.xlabel("Angle [radians]")
+            plt.ylabel("Depth metric "  + r"$[1 / depth^2]$")
             plt.draw()
             plt.pause(0.0001) 
             plt.clf()
