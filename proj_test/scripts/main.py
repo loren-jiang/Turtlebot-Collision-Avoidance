@@ -171,16 +171,13 @@ def compute_twist_and_move(final_state):
 
     while (euclidean_dist(robot_state[:2], final_state[:2]) >= distance_tolerance):
         robot_state = get_robot_state()
-        #print("ROBOT STATE:" + str(robot_state))
-        #print("FINAL STATE:" + str(final_state))
+        print("ROBOT STATE:" + str(robot_state))
+        print("FINAL STATE:" + str(final_state))
         steer_ang = math.atan2(final_state[1] - robot_state[1], final_state[0] - robot_state[0])
         error = final_state - robot_state
         twist.linear.x = kp_lin_vel * (error[0])
         twist.angular.z = kp_ang_vel * (steer_ang - robot_state[2])
-        #if abs(prev_twist.angular.z - twist.angular.z) > 
         cmd_vel.publish(twist)
-        #print(twist)
-        prev_twist = twist
         rate_ctrl_loop.sleep() 
     
 def get_robot_state():
@@ -209,6 +206,7 @@ def main():
     #shutdown
     rospy.on_shutdown(shutdown)
 
+    #create new laser_scan class
     laser_scan = laserscan.LaserScan()
 
     # set up the odometry reset publisher
@@ -244,7 +242,7 @@ def main():
         goal_dist = np.array([1.5, 0])
         rot2d = rotation2d(robot_state[2]) 
         goal_from_world = np.dot(rot2d, goal_dist)
-        # need to double check if this is the correct transformation
+
         ideal_goal_state = np.array([goal_from_world[0] + robot_state[0], goal_from_world[1] + robot_state[1], robot_state[2]])
         #IF WE WANT POINT CLOUD2
         # if lidar.xyz_generator is not None:
@@ -256,7 +254,6 @@ def main():
                 
         #       mag = c*c * (a - b*d) #magnitude of pixel to turtlebot pos vector
         #       print(d)
-        print(laser_scan.combined_data)
         if not combined[:,0].any():
             print("BAD DATA")
             continue
