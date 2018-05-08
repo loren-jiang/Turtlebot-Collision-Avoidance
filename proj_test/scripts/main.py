@@ -15,12 +15,14 @@ from std_msgs.msg import Empty
 from time import time
 from geometry_msgs.msg import Twist, Pose, Point, Quaternion
 from sensor_msgs.msg import LaserScan 
-from lidarClass import Lidar
+import laserscan
 from laser_geometry import LaserProjection
 import sensor_msgs.point_cloud2 as pc2 #may want to use point cloud...not sure yet
 import actionlib
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 from actionlib_msgs.msg import *
+from rospy.numpy_msg import numpy_msg
+from rospy_tutorials.msg import Floats
 
 #plotting tools
 import matplotlib.pyplot as plt
@@ -31,10 +33,10 @@ from matplotlib import style
 valley_mag_thresh = 0.4 #NEED TO SET THESE
 valley_ind_thresh = 20.0 * 0.00171110546216 #num pixels * angle increment
 
+filt_scan_flattened = np.zeros(1280)
 robot_state = np.zeros(3) #global turtlebot state
 goal_state = np.zeros(3) #global goal state
 target_speed = np.array(.2) # m/s?
-ROS_RATE = 10 # frequency Hz?
 #butterworth for smoothing
 b_filt, a_filt = sig.butter(4, 0.03, analog=False)
 
@@ -47,9 +49,11 @@ to_frame = 'base_link'
 listener = tf.TransformListener()
 listener.waitForTransform(from_frame, to_frame, rospy.Time(), rospy.Duration(5.0))
 broadcaster = tf.TransformBroadcaster()
+
 # this is so that each loop of the while loop takes the same amount of time.  The controller works better
 # if you have this here
-rate = rospy.Rate(ROS_RATE) 
+rate_ctrl_loop = rospy.Rate(1000) 
+rate_main_loop = rospy.Rate(10000000)
 
 cmd_vel = rospy.Publisher('cmd_vel_mux/input/navi', Twist, queue_size=10) #autonomous
 prev_twist = Twist()
@@ -108,11 +112,11 @@ def compute_goal(state, data):
     print(valley_angles)
     print("\n")
 
-    print("-----------------------------valley_widths--------------------------------")
-    print(valley_widths)
-    print("\n")
+    # print("-----------------------------valley_widths--------------------------------")
+    # print(valley_widths)
+    # print("\n")
     final_goal = np.zeros(3) 
-    goal_dist = np.array([0.25, 0]) #goal dist in robot frame [meters]
+    goal_dist = np.array([0.1, 0]) #goal dist in robot frame [meters]
 
 
     #PICKING WIDEST VALLEY
@@ -177,7 +181,7 @@ def compute_twist_and_move(final_state):
         cmd_vel.publish(twist)
         #print(twist)
         prev_twist = twist
-        rate.sleep() 
+        rate_ctrl_loop.sleep() 
     
 def get_robot_state():
     # getting the position of the turtlebot
@@ -194,6 +198,10 @@ def moving_average(a, n=3) :
     ret[n:] = ret[n:] - ret[:-n]
     return ret[n - 1:] / n
 
+def callback(msg):
+    global filt_scan_flattened
+    if msg.data.any():
+        filt_scan_flattened = msg.data
 
 def main():
     global cmd_vel, ROS_RATE, goal_state, robot_state, from_frame, to_frame, prev_goal_state
@@ -201,33 +209,25 @@ def main():
     #shutdown
     rospy.on_shutdown(shutdown)
 
+    laser_scan = laserscan.LaserScan()
+
     # set up the odometry reset publisher
     reset_odom = rospy.Publisher('/mobile_base/commands/reset_odometry', Empty, queue_size=10)
-
     # reset odometry (these messages take a few iterations to get through)
     timer = time()
     while time() - timer < 0.5:
         reset_odom.publish(Empty())
+
+    # subscribed to filtered laser scan data
+    #scan_sub = rospy.Subscriber('/filtered_laserscan', numpy_msg(Floats), callback)
+
 
     # move_base = actionlib.SimpleActionClient('move_base', MoveBaseAction)
     # rospy.loginfo("Wait for the action server to come up")
     # # Allow up to 5 seconds for the action server to come up
     # move_base.wait_for_server(rospy.Duration(5))
 
-    #new lidar object
-    lidar = Lidar()
-
-    #direction from pixel to turtlebot pos vector
-    beta = 0
     
-    #constants chosen such that a - b*d_max = 0
-    a = 10
-    b = 1
-    d_max = 10.0
-
-    # certainty value
-    c = 1
-
     #data visualization
     plt.ion() ## Note this correction
     fig=plt.figure()
@@ -235,7 +235,11 @@ def main():
     while not rospy.is_shutdown():
         # 3x1 array, representing (x,y,theta) of robot starting state
         robot_state = get_robot_state()
-
+        # ranges = filt_scan_flattened[0:640]
+        # angles = filt_scan_flattened[640:]
+        # combined = np.column_stack((ranges, angles))
+        
+        combined = laser_scan.combined_data
         #define goal state as in front of the current state
         goal_dist = np.array([1.5, 0])
         rot2d = rotation2d(robot_state[2]) 
@@ -252,54 +256,37 @@ def main():
                 
         #       mag = c*c * (a - b*d) #magnitude of pixel to turtlebot pos vector
         #       print(d)
-
-        if not lidar.ranges or all(np.isnan(lidar.ranges)):
-            print("WALL or nans")
+        print(laser_scan.combined_data)
+        if not combined[:,0].any():
+            print("BAD DATA")
             continue
         else:
-            #clean the scan data and compute angle
-            # clean data optimized:
-            angles = np.arange(lidar.angle_min, lidar.angle_max, lidar.angle_increment)
-
-            #linear interpolation nan values in laser scan
-            lidar_copy = np.asarray(lidar.ranges)
-            nans, nonzero_filter = nan_helper(lidar_copy)
-            
-            lidar_copy[nans] = np.interp(nonzero_filter(nans), nonzero_filter(~nans), lidar_copy[~nans])
-
-            combined = np.vstack((lidar_copy, angles)).T # shape  = (640, 2)
-            tmp = sig.filtfilt(b_filt,a_filt,1./(combined[:,0] *combined[:,0] ))
-            #tmp = 1./(combined[:,0] *combined[:,0] ) #no fitlering
-            combined[:,0] = tmp
-
             goal_state = compute_goal(robot_state, combined) #find the goal (best "valley" to go to)
             #move_base.send_goal(move_goal)
             #if euclidean_dist(prev_goal_state[:2],goal_state[:2]) > .25:
             if abs(prev_goal_state[2]-goal_state[2]) > .6:
                 goal_state = prev_goal_state
 
-            print("-----------------------robot_state--------------------------------")
-            print(robot_state)
-            print("\n")
-            print("-----------------------goal_state--------------------------------")
-            print(goal_state)
-            print("\n")
+            # print("-----------------------robot_state--------------------------------")
+            # print(robot_state)
+            # print("\n")
+            # print("-----------------------goal_state--------------------------------")
+            # print(goal_state)
+            # print("\n")
 
-            #compute_twist_and_move(goal_state)
+            compute_twist_and_move(goal_state)
             
-            
-
             prev_goal_state = goal_state
-            plt.plot(angles, combined[:,0])
-            plt.title("Laserscan data, interpolated and smoothed")
-            plt.xlabel("Angle [radians]")
-            plt.ylabel("Depth metric "  + r"$[1 / depth^2]$")
-            plt.draw()
-            plt.pause(0.0001) 
-            plt.clf()
-        rospy.sleep(0.05)
-        
-        rate.sleep()    
+        #     plt.plot(combined[:,1], combined[:,0])
+        #     plt.title("Laserscan data, interpolated and smoothed")
+        #     plt.xlabel("Angle [radians]")
+        #     plt.ylabel("Depth metric "  + r"$[1 / depth^2]$")
+        #     plt.draw()
+        #     plt.pause(0.0001) 
+        #     plt.clf()
+        # rospy.sleep(0.1)
+        # print(time())
+        rate_main_loop.sleep()    
 
 def shutdown():
     global cmd_vel
