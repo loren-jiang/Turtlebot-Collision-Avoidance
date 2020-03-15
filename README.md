@@ -1,8 +1,13 @@
 # Turtlebot_Collision_Avoidance
 This repo contains the source code for my EEC106B Robotics and Manipulation final project.
 
+## Overview
+Working alongside David Wang, our project aimed to create a hybrid autonomous/tele-operated system that alleviates the probability of vehicle collisions with stationary and dynamic obstacles. We used Kobuki Turtlebots to perform real-time obstacle detection with the Kinect sensors built-in infrared laser projector. We performed Vector Field Histogram analysis on interpolated and smoothed laser scan data, continuously monitoring the environment for objects in the Kinect’s field of view. When no obstacles are in the way, the Turtlebot can be freely driven by the user. When an obstacle is detected and determined to be in the path of the Turtlebot, our software immediately switches to autonomous control to avoid collisions, reducing the chances of impact and injury.
+1. [Presentation and demo](https://docs.google.com/presentation/d/15HJ5kUDF1NXPR6jYo17pOHJCR9Qhuvq8K2VfPPu_B6Q/edit#slide=id.g39c297cd23_0_22)
+
+
 ## Setup Instructions
-This code is based on the ROS platform. For more information, please visit [here](ros.org) for documentation. NOTE: This project was built in Ubuntu 14.04 on ROS Indigo and ROS Kinetic for the Turtlebot
+This code is based on the ROS platform. For more information, please visit [here](https://www.ros.org/) for documentation. NOTE: This project was built in Ubuntu 14.04 on ROS Indigo and ROS Kinetic for the Turtlebot
 
 #### On Your Local Machine:
 1. Clone this repo.
